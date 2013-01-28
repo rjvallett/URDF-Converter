@@ -6,15 +6,13 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Windows.Forms;
 using System.Runtime.InteropServices;
-using System.Xml;
-using System.Xml.Schema;
-using Inventor;
+using System.Windows.Forms;
 
 using URDF;
+using Inventor;
 
-namespace URDFPlugIn
+namespace URDFConverter
 {
     public partial class Form1 : Form
     {
@@ -24,6 +22,8 @@ namespace URDFPlugIn
         public Form1()
         {
             InitializeComponent();
+
+            #region Get Inventor session
             try
             {
                 _invApp = (Inventor.Application)Marshal.GetActiveObject("Inventor.Application");
@@ -53,10 +53,50 @@ namespace URDFPlugIn
                 }
             }
 
+            #endregion
+
+            #region Test code
+            /*
+            // Define a new Robot, robot, with the name "HuboPlus"
+            Robot robot = new Robot("HuboPlus");
             
+            // Define a new Link, link1, with the name "link1".
+            Link link1 = new Link("link1");
+            
+            // Set the Visual attributes, geometric and material, of the link.
+            link1.Visual = new Visual(new Mesh("package://link1.stl"), 
+                new URDF.Material("Red", new double[] { 255, 0, 0, 1.0 }));
+
+            // Set the Collision attributes of the link.
+            link1.Collision = new Collision(new URDF.Cylinder(1, 2));
+
+            // Set the Inertial attributes of the link.
+            link1.Inertial = new Inertial(5, new double[] { 1, 0, 0, 1, 0, 1 });
+
+            // Add the link to the list of links within the robot.
+            robot.Links.Add(link1);
+
+            // Make a clone of link1 and add it to the robot model.
+            robot.Links.Add((Link)link1.Clone());
+
+
+            // Define a new Joint, joint1, with the name "joint1".
+            Joint joint1 = new Joint("joint1", JointType.Prismatic, link1, link1);
+
+            robot.Joints.Add(joint1);
+
+            robot.Joints.Add((Joint)joint1.Clone());
+
+            robot.WriteURDFToFile("hubo.xml");
+            */
+
+            #endregion
+
+            WriteURDF("HuboPlus.xml");
+
         }
 
-        public void PrintAllProperties(string xmlfilename)
+        public void WriteURDF(string xmlfilename)
         {
             UnitsOfMeasure oUOM = _invApp.ActiveDocument.UnitsOfMeasure;
             AssemblyDocument oAsmDoc = (AssemblyDocument)_invApp.ActiveDocument;
@@ -67,12 +107,10 @@ namespace URDFPlugIn
 
             Robot hubo = new Robot("HuboPlus");
 
-            // Iterate over all of the components and isolate the Body_* named ones
             foreach (ComponentOccurrence oCompOccur in oAsmCompDef.Occurrences)
             {
-                // Generate links from available subassemblies in main assembly
-                name = oCompOccur.Name;
-                hubo.Links.Add(new Link(FormatName(name)));
+                // Generate links from available subassemblies in main assembly.
+                hubo.Links.Add(new Link(oCompOccur.Name));
                 int c = hubo.Links.Count - 1;
                 for (int i = 0; i < hubo.Links.Count; i++)
                 {
@@ -80,7 +118,6 @@ namespace URDFPlugIn
                         hubo.Links[c].Parent = hubo.Links[i];
                 }
 
-                // Generate joints between connected links
                 if (hubo.Links[c].Parent != null)
                 {
                     hubo.Joints.Add(new Joint(FormatJointName(hubo.Links[c].Name), JointType.Revolute, hubo.Links[c].Parent, hubo.Links[c]));
@@ -101,63 +138,17 @@ namespace URDFPlugIn
                     }
                 }
 
-                // Get mass properties for each link
-                hubo.Links[c].Intertial = new Link.Inertial();
-                hubo.Links[c].Intertial.Mass = oCompOccur.MassProperties.Mass;
-                hubo.Links[c].Intertial.XYZ = FindCenterOfMassOffset(oCompOccur);
-
+                // Get mass properties for each link.
                 double[] iXYZ = new double[6];
-                oCompOccur.MassProperties.XYZMomentsOfInertia(out iXYZ[0], out iXYZ[1], out iXYZ[2], out iXYZ[3], out iXYZ[4], out iXYZ[5]); // Ixx, Iyy, Izz, Ixy, Iyz, Ixz
-                hubo.Links[c].Intertial.Inertia = new double[,] { { iXYZ[0], iXYZ[3], iXYZ[5] }, { iXYZ[3], iXYZ[1], iXYZ[4] }, { iXYZ[5], iXYZ[4], iXYZ[2] } };
+                oCompOccur.MassProperties.XYZMomentsOfInertia(out iXYZ[0], out iXYZ[3], out iXYZ[5], out iXYZ[1], out iXYZ[4], out iXYZ[2]); // Ixx, Iyy, Izz, Ixy, Iyz, Ixz -> Ixx, Ixy, Ixz, Iyy, Iyz, Izz
+                hubo.Links[c].Inertial = new Inertial(oCompOccur.MassProperties.Mass, iXYZ);
+                hubo.Links[c].Inertial.XYZ = FindCenterOfMassOffset(oCompOccur);
 
-                //MessageBox.Show(FindOrigin(oCompOccur)[0].ToString());
-
-                hubo.Links[c].Geometry = new Link.Visual.Geometry(new Shape());
-                hubo.Links[c].Geometry.Shape = Shape.Mesh;
-
-                hubo.Links[c].Geometry.XYZ = FindOrigin(oCompOccur);
-                
-                if (hubo.Links[c].Parent != null)
-                {
-                    for (int i = 0; i < 3; i++)
-                    {
-                        hubo.Links[c].Geometry.XYZ[i] -= hubo.Links[c].Parent.Geometry.XYZ[i];
-                    }
-                }
-
-                // Mirror bodies
-                if (hubo.Links[c].Name.IndexOf("_R") != -1)
-                {
-                    hubo.Links.Add((Link)hubo.Links[c].Clone());
-                    int d = hubo.Links.Count - 1;
-                    // Rename the mirrored body
-                    hubo.Links[d].Name = "Body_L" + hubo.Links[c].Name.Substring(6, 2);
-
-                    // Mirror the inertial origin
-                    hubo.Links[d].Intertial.XYZ[1] *= -1;
-
-                    // Mirror the moment of inertia
-                    hubo.Links[d].Intertial.Inertia[0, 1] *= -1;
-                    hubo.Links[d].Intertial.Inertia[1, 0] *= -1;
-                    hubo.Links[d].Intertial.Inertia[2, 1] *= -1;
-                    hubo.Links[d].Intertial.Inertia[1, 2] *= -1;
-
-                    // Mirror the geometric origin
-                    hubo.Links[d].Geometry.XYZ[1] *= -1;
-
-                    // Clone the joint 
-                    int j = hubo.Joints.Count - 1;
-                    hubo.Joints.Add((Joint)hubo.Joints[j].Clone());
-                    int k = hubo.Joints.Count - 1;
-                    hubo.Joints[k].Name = "L" + hubo.Joints[k].Name.Substring(1, 2);
-                    if (hubo.Joints[k].Parent.Name.IndexOf("_R") != -1)
-                        hubo.Joints[k].Parent.Name = "Body_L" + hubo.Joints[k].Parent.Name.Substring(6, 2);
-                    hubo.Joints[k].Child.Name = hubo.Links[d].Name;
-
-                }
+                // Set shape properties for each link.
+                hubo.Links[c].Visual = new Visual(new Mesh("package://" + hubo.Name + "/" + hubo.Links[c].Name + ".stl"));
             }
 
-            hubo.PrintURDF(xmlfilename);
+
         }
 
         public double[] ComputeRelativeOffset(ComponentOccurrence Child, ComponentOccurrence Parent)
@@ -173,7 +164,7 @@ namespace URDFPlugIn
 
             return c3;
         }
-        
+
         public double[] FindOrigin(ComponentOccurrence oCompOccur)
         {
             UnitsOfMeasure oUOM = _invApp.ActiveDocument.UnitsOfMeasure;
@@ -182,7 +173,7 @@ namespace URDFPlugIn
             double[] c = new double[3];
             WorkPoint oWP = oCompDef.WorkPoints[1];
             oCompOccur.CreateGeometryProxy(oWP, out oWorkPointProxy);
-            
+
             c[0] = ((WorkPointProxy)oWorkPointProxy).Point.X;
             c[1] = ((WorkPointProxy)oWorkPointProxy).Point.Y;
             c[2] = ((WorkPointProxy)oWorkPointProxy).Point.Z;
@@ -196,7 +187,6 @@ namespace URDFPlugIn
             name = FormatName(oCompOccur.Name);
 
             return c;
-            // Dump translation data to debug window in case you want to do relative positions
         }
 
         public int CheckBody(string strData)
@@ -206,7 +196,6 @@ namespace URDFPlugIn
 
             return REMatches.Count;
         }
-
 
         public double[] FindCenterOfMassOffset(ComponentOccurrence oDoc)
         {
@@ -224,8 +213,6 @@ namespace URDFPlugIn
             {
                 c[k] = oUOM.ConvertUnits(c[k], "cm", "m");
             }
-
-
 
             return c;
         }
@@ -284,9 +271,7 @@ namespace URDFPlugIn
             return null;
         }
 
-        private void button1_Click(object sender, EventArgs e)
-        {
-            PrintAllProperties("hubo.xml");
-        }
+
+
     }
 }
